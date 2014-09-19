@@ -659,66 +659,79 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
     {
         /** ks/cf existence checks will be done by open and getCFS methods for us */
         Keyspace keyspace = Keyspace.open(ksName);
-        keyspace.getColumnFamilyStore(cfName).loadNewSSTables();
+        keyspace.getColumnFamilyStore(cfName).loadNewSSTables(null);
     }
 
     /**
      * #{@inheritDoc}
      */
-    public synchronized void loadNewSSTables()
+    public synchronized void loadNewSSTables(String loadDataDir)
     {
         logger.info("Loading new SSTables for {}/{}...", keyspace.getName(), name);
+
+        logger.debug("Checking directory {}", loadDataDir);
+        File dir = new File(loadDataDir);
+
+        // check that directories exist.
+        if (!dir.exists())
+        {
+            logger.error("SSTable load Directory {} doesn't exist", loadDataDir);
+            throw new IllegalArgumentException("SSTable load directory does not exist");
+        }
+        // if directories exist verify their permissions
+        if (!Directories.verifyFullPermissions(dir, loadDataDir))
+        {
+            // if permissions aren't sufficient, stop cassandra.
+            throw new IllegalArgumentException("Enough permissions not found on the SSTable reload directory");
+        }
 
         Set<Descriptor> currentDescriptors = new HashSet<Descriptor>();
         for (SSTableReader sstable : data.getView().sstables)
             currentDescriptors.add(sstable.descriptor);
         Set<SSTableReader> newSSTables = new HashSet<SSTableReader>();
 
-        Directories.SSTableLister lister = directories.sstableLister().skipTemporary(true);
-        for (Map.Entry<Descriptor, Set<Component>> entry : lister.list().entrySet())
+        // get all files on the supplied path.
+
+        Descriptor descriptor = Descriptor.fromFilename(loadDataDir);
+
+        if (descriptor.type.isTemporary) // in the process of being written
+            // continue;
+
+        if (!descriptor.isCompatible())
+            throw new RuntimeException(String.format("Can't open incompatible SSTable! Current version %s, found file: %s",
+                                                     Descriptor.Version.CURRENT,
+                                                     descriptor));
+
+        // force foreign sstables to level 0
+        try
         {
-            Descriptor descriptor = entry.getKey();
+            if (new File(descriptor.filenameFor(Component.STATS)).exists())
+                descriptor.getMetadataSerializer().mutateLevel(descriptor, 0);
+        }
+        catch (IOException e)
+        {
+            // SSTableReader.logOpenException(entry.getKey(), e);
+            // continue;
+        }
 
-            if (currentDescriptors.contains(descriptor))
-                continue; // old (initialized) SSTable found, skipping
-            if (descriptor.type.isTemporary) // in the process of being written
-                continue;
+        // Increment the generation until we find a filename that doesn't exist. This is needed because the new
+        // SSTables that are being loaded might already use these generation numbers.
+        Descriptor newDescriptor;
+        do
+        {
+            newDescriptor = new Descriptor(descriptor.version,
+                                           descriptor.directory,
+                                           descriptor.ksname,
+                                           descriptor.cfname,
+                                           fileIndexGenerator.incrementAndGet(),
+                                           Descriptor.Type.FINAL);
+        }
+        while (new File(newDescriptor.filenameFor(Component.DATA)).exists());
 
-            if (!descriptor.isCompatible())
-                throw new RuntimeException(String.format("Can't open incompatible SSTable! Current version %s, found file: %s",
-                                                         Descriptor.Version.CURRENT,
-                                                         descriptor));
+        logger.info("Renaming new SSTable {} to {}", descriptor, newDescriptor);
+        SSTableWriter.rename(descriptor, newDescriptor, descriptor.);
 
-            // force foreign sstables to level 0
-            try
-            {
-                if (new File(descriptor.filenameFor(Component.STATS)).exists())
-                    descriptor.getMetadataSerializer().mutateLevel(descriptor, 0);
-            }
-            catch (IOException e)
-            {
-                SSTableReader.logOpenException(entry.getKey(), e);
-                continue;
-            }
-
-            // Increment the generation until we find a filename that doesn't exist. This is needed because the new
-            // SSTables that are being loaded might already use these generation numbers.
-            Descriptor newDescriptor;
-            do
-            {
-                newDescriptor = new Descriptor(descriptor.version,
-                                               descriptor.directory,
-                                               descriptor.ksname,
-                                               descriptor.cfname,
-                                               fileIndexGenerator.incrementAndGet(),
-                                               Descriptor.Type.FINAL);
-            }
-            while (new File(newDescriptor.filenameFor(Component.DATA)).exists());
-
-            logger.info("Renaming new SSTable {} to {}", descriptor, newDescriptor);
-            SSTableWriter.rename(descriptor, newDescriptor, entry.getValue());
-
-            SSTableReader reader;
+        SSTableReader reader;
             try
             {
                 reader = SSTableReader.open(newDescriptor, entry.getValue(), metadata, partitioner);
@@ -726,10 +739,9 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
             catch (IOException e)
             {
                 SSTableReader.logOpenException(entry.getKey(), e);
-                continue;
+                // continue;
             }
             newSSTables.add(reader);
-        }
 
         if (newSSTables.isEmpty())
         {
