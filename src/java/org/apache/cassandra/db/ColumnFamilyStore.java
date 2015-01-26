@@ -697,14 +697,41 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
      */
     public synchronized void loadNewSSTables()
     {
-        logger.info("Loading new SSTables for {}/{}...", keyspace.getName(), name);
+        loadNewSSTables(null);
+    }
 
+    /**
+     * #{@inheritDoc}
+     *
+     * @param path Path from which to load new sstables, pass null in order to load from default data dirs
+     */
+    public synchronized void loadNewSSTables(String path)
+    {
+        logger.info("Loading new SSTables for {}/{}...", keyspace.getName(), name);
+        File dir = null;
+        if (path != null)
+        {
+            dir = new File(path);
+            // check that directory exists.
+            if (!dir.exists()) {
+                throw new RuntimeException(String.format("Load directory %s does not exist", path));
+            }
+            // if directories exist verify their permissions
+            if (!Directories.verifyFullPermissions(dir, path)) {
+                throw new RuntimeException(String.format("Insufficient permissions on load directory %d", path));
+            }
+        }
+
+        // These are the current descriptors for the sstables
         Set<Descriptor> currentDescriptors = new HashSet<Descriptor>();
         for (SSTableReader sstable : data.getView().sstables)
             currentDescriptors.add(sstable.descriptor);
-        Set<SSTableReader> newSSTables = new HashSet<>();
 
-        Directories.SSTableLister lister = directories.sstableLister().skipTemporary(true);
+        // We need to load the new sstables over here
+        Set<SSTableReader> newSSTables = new HashSet<>();
+        Directories.SSTableLister lister = (dir == null ? directories.sstableLister().skipTemporary(true)
+                                                        : directories.sstableLister(dir).skipTemporary(true));
+
         for (Map.Entry<Descriptor, Set<Component>> entry : lister.list().entrySet())
         {
             Descriptor descriptor = entry.getKey();
@@ -733,18 +760,14 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
 
             // Increment the generation until we find a filename that doesn't exist. This is needed because the new
             // SSTables that are being loaded might already use these generation numbers.
-            Descriptor newDescriptor;
-            do
-            {
-                newDescriptor = new Descriptor(descriptor.version,
-                                               descriptor.directory,
-                                               descriptor.ksname,
-                                               descriptor.cfname,
-                                               fileIndexGenerator.incrementAndGet(),
-                                               Descriptor.Type.FINAL,
-                                               descriptor.formatType);
-            }
-            while (new File(newDescriptor.filenameFor(Component.DATA)).exists());
+            Descriptor newDescriptor = new Descriptor(descriptor.version,
+                                                      descriptor.directory,
+                                                      descriptor.ksname,
+                                                      descriptor.cfname,
+                                                      fileIndexGenerator.incrementAndGet(),
+                                                      Descriptor.Type.FINAL,
+                                                      descriptor.formatType);
+
 
             logger.info("Renaming new SSTable {} to {}", descriptor, newDescriptor);
             SSTableWriter.rename(descriptor, newDescriptor, entry.getValue());
