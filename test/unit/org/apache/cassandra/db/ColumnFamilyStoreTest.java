@@ -43,6 +43,7 @@ import java.util.concurrent.TimeUnit;
 import com.google.common.base.Function;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Sets;
+import com.google.common.io.Files;
 import org.apache.cassandra.io.sstable.*;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.io.sstable.format.SSTableWriter;
@@ -1925,6 +1926,17 @@ public class ColumnFamilyStoreTest
 
         assertEquals(0, cfs.getSSTables().size());
 
+        // Create a temp dir and write sstable to it
+        File tempdir = Files.createTempDir();
+        File dataDir = new File(tempdir.getAbsolutePath() + File.separator + KEYSPACE1 + File.separator + CF_STANDARD1);
+        assert dataDir.mkdirs();
+
+        writer = new SSTableSimpleWriter(dataDir,
+                                         cfmeta, StorageService.getPartitioner());
+        writer.newRow(key);
+        writer.addColumn(bytes("col"), bytes("val"), 1);
+        writer.close();
+
         // start the generation counter at 1 again (other tests have incremented it already)
         cfs.resetFileIndexGenerator();
 
@@ -1933,23 +1945,24 @@ public class ColumnFamilyStoreTest
         {
             // avoid duplicate hardlinks to incremental backups
             DatabaseDescriptor.setIncrementalBackupsEnabled(false);
-            cfs.loadNewSSTables();
+            cfs.loadNewSSTables(dataDir.getAbsolutePath());
         }
         finally
         {
             DatabaseDescriptor.setIncrementalBackupsEnabled(incrementalBackupsEnabled);
         }
 
-        assertEquals(2, cfs.getSSTables().size());
+        assertEquals(1, cfs.getSSTables().size());
         generations = new HashSet<>();
         for (Descriptor descriptor : dir.sstableLister().list().keySet())
             generations.add(descriptor.generation);
 
         // normally they would get renamed to generations 1 and 2, but since those filenames already exist,
         // they get skipped and we end up with generations 3 and 4
-        assertEquals(2, generations.size());
+        assertEquals(3, generations.size());
+        assertTrue(generations.contains(1));
+        assertTrue(generations.contains(2));
         assertTrue(generations.contains(3));
-        assertTrue(generations.contains(4));
     }
 
     private ColumnFamilyStore prepareMultiRangeSlicesTest(int valueSize, boolean flush) throws Throwable

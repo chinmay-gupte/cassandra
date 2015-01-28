@@ -406,6 +406,11 @@ public class Directories
         return new SSTableLister();
     }
 
+    public SSTableLister sstableLister(File path)
+    {
+        return new SSTableLister(path);
+    }
+
     public static class DataDirectory
     {
         public final File location;
@@ -462,6 +467,19 @@ public class Directories
         private final Map<Descriptor, Set<Component>> components = new HashMap<>();
         private boolean filtered;
         private String snapshotName;
+        private File[] datapaths;
+
+        private SSTableLister() {
+            this.datapaths = dataPaths;
+        }
+
+        private SSTableLister(File dataPath) {
+            this(new File[]{dataPath});
+        }
+
+        private SSTableLister(File[] datapaths) {
+            this.datapaths = datapaths;
+        }
 
         public SSTableLister skipTemporary(boolean b)
         {
@@ -521,7 +539,7 @@ public class Directories
             if (filtered)
                 return;
 
-            for (File location : dataPaths)
+            for (File location : this.datapaths)
             {
                 if (BlacklistedDirectories.isUnreadable(location))
                     continue;
