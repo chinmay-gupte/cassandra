@@ -344,10 +344,10 @@ public interface ColumnFamilyStoreMBean
     public List<String> getSSTablesForKey(String key);
 
     /**
-     * Scan through Keyspace/ColumnFamily's data directory
-     * determine which SSTables should be loaded and load them
+     * Scan through supplied path to load new SSTables, defaults to data dirs
+     * @param path Path from which to load new SSTables
      */
-    public void loadNewSSTables();
+    public void loadNewSSTables(String path);
 
     /**
      * @return the number of SSTables in L0.  Always return 0 if Leveled compaction is not enabled.

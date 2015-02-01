@@ -43,6 +43,7 @@ import java.util.concurrent.TimeUnit;
 import com.google.common.base.Function;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Sets;
+import com.google.common.io.Files;
 import org.apache.cassandra.io.sstable.*;
 import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.io.sstable.format.SSTableWriter;
@@ -1926,7 +1927,7 @@ public class ColumnFamilyStoreTest
         assertEquals(0, cfs.getSSTables().size());
 
         // start the generation counter at 1 again (other tests have incremented it already)
-        cfs.resetFileIndexGenerator();
+        cfs.resetFileIndexGenerator(0);
 
         boolean incrementalBackupsEnabled = DatabaseDescriptor.isIncrementalBackupsEnabled();
         try
@@ -1950,6 +1951,40 @@ public class ColumnFamilyStoreTest
         assertEquals(2, generations.size());
         assertTrue(generations.contains(3));
         assertTrue(generations.contains(4));
+
+        // Create a staging dir and write sstable to it
+        File tempdir = Files.createTempDir();
+        File dataDir = new File(tempdir.getAbsolutePath() + File.separator + KEYSPACE1 + File.separator + CF_STANDARD1);
+        assert dataDir.mkdirs();
+        // Reset the generation to 3, so that when flush happens, it will write sstable with gen 4, which already exists
+        // testing, if it does not overwrite an existing sstable
+        cfs.resetFileIndexGenerator(3);
+        writer = new SSTableSimpleWriter(dataDir,
+                cfmeta, StorageService.getPartitioner());
+        writer.newRow(key);
+        writer.addColumn(bytes("col"), bytes("val"), 1);
+        writer.close();
+
+        incrementalBackupsEnabled = DatabaseDescriptor.isIncrementalBackupsEnabled();
+        try
+        {
+            DatabaseDescriptor.setIncrementalBackupsEnabled(false);
+            cfs.loadNewSSTables(dataDir.getAbsolutePath());
+        } finally
+        {
+            DatabaseDescriptor.setIncrementalBackupsEnabled(incrementalBackupsEnabled);
+        }
+        assertEquals(3, cfs.getSSTables().size());
+        generations = new HashSet<>();
+        for (Descriptor descriptor : dir.sstableLister().list().keySet())
+        {
+            generations.add(descriptor.generation);
+        }
+        assertEquals(3, generations.size());
+        assertTrue(generations.contains(3));
+        assertTrue(generations.contains(4));
+        assertTrue(generations.contains(5));
+        assertEquals(0, dataDir.listFiles().length);
     }
 
     private ColumnFamilyStore prepareMultiRangeSlicesTest(int valueSize, boolean flush) throws Throwable

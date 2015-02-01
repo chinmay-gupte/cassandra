@@ -697,18 +697,45 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
      */
     public synchronized void loadNewSSTables()
     {
-        logger.info("Loading new SSTables for {}/{}...", keyspace.getName(), name);
+        loadNewSSTables(null);
+    }
 
-        Set<Descriptor> currentDescriptors = new HashSet<Descriptor>();
+    /**
+     * #{@inheritDoc}
+     *
+     * @param path Path from which to load new sstables, pass null in order to load from default data dirs
+     */
+    public synchronized void loadNewSSTables(String path)
+    {
+        logger.info("Loading new SSTables for {}/{}...", keyspace.getName(), name);
+        File dir = null;
+        if (path != null)
+        {
+            dir = new File(path);
+            // check that directory exists.
+            if (!dir.exists())
+            {
+                throw new RuntimeException(String.format("Load directory %s does not exist", path));
+            }
+            // if directory exists verify its permissions
+            if (!Directories.verifyFullPermissions(dir, path))
+            {
+                throw new RuntimeException(String.format("Insufficient permissions on load directory %d", path));
+            }
+        }
+
+        Set<Descriptor> currentDescriptors = new HashSet<>();
         for (SSTableReader sstable : data.getView().sstables)
             currentDescriptors.add(sstable.descriptor);
-        Set<SSTableReader> newSSTables = new HashSet<>();
 
-        Directories.SSTableLister lister = directories.sstableLister().skipTemporary(true);
+        Set<SSTableReader> newSSTables = new HashSet<>();
+        Directories.SSTableLister lister = dir == null
+                                         ? directories.sstableLister().skipTemporary(true)
+                                         : directories.sstableLister(dir).skipTemporary(true);
+
         for (Map.Entry<Descriptor, Set<Component>> entry : lister.list().entrySet())
         {
             Descriptor descriptor = entry.getKey();
-
             if (currentDescriptors.contains(descriptor))
                 continue; // old (initialized) SSTable found, skipping
             if (descriptor.type.isTemporary) // in the process of being written
@@ -737,7 +764,7 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
             do
             {
                 newDescriptor = new Descriptor(descriptor.version,
-                                               descriptor.directory,
+                                               directories.getWriteableLocationAsFile(new File(descriptor.baseFilename()).length()),
                                                descriptor.ksname,
                                                descriptor.cfname,
                                                fileIndexGenerator.incrementAndGet(),
@@ -2900,9 +2927,9 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
     }
 
     @VisibleForTesting
-    void resetFileIndexGenerator()
+    void resetFileIndexGenerator(int resetValue)
     {
-        fileIndexGenerator.set(0);
+        fileIndexGenerator.set(resetValue);
     }
 
     public static final Function<DataTracker.View, List<SSTableReader>> ALL_SSTABLES = new Function<DataTracker.View, List<SSTableReader>>()
